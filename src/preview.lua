@@ -1,9 +1,33 @@
 local context = require("shaderdebug.src.context")
 local input_store = require("shaderdebug.src.input_store")
+local util = require("shaderdebug.src.util")
 
 local M = {}
 
 local on_preview_closed = function() end
+local native_image_supported = nil
+local missing_image_backend_warned = false
+
+local function warn_missing_image_backend()
+    if missing_image_backend_warned then
+        return
+    end
+
+    missing_image_backend_warned = true
+    util.notify(
+        "No image backend available for shaderdebug preview. Install/enable image.nvim or use a Neovim build with vim.ui.img support.",
+        vim.log.levels.WARN
+    )
+end
+
+local function warn_unavailable_backend(backend)
+    if missing_image_backend_warned then
+        return
+    end
+
+    missing_image_backend_warned = true
+    util.notify(string.format("Shaderdebug preview backend '%s' is unavailable.", backend), vim.log.levels.WARN)
+end
 
 function M.setup(opts)
     on_preview_closed = opts and opts.on_preview_closed or on_preview_closed
@@ -17,29 +41,84 @@ function M.result_context(result)
     }
 end
 
+local function supports_native_image_api()
+    if native_image_supported ~= nil then
+        return native_image_supported
+    end
+
+    local image = vim.ui and vim.ui.img
+    if type(image) ~= "table" or type(image.set) ~= "function" or type(image.del) ~= "function" then
+        native_image_supported = false
+        return false
+    end
+
+    local ok, supported = pcall(image._supported, { timeout = 100 })
+    native_image_supported = ok and supported or false
+    return native_image_supported
+end
+
 local function load_image_api()
+    local preview_config = context.get_config().preview or {}
+    local backend = preview_config.backend or "auto"
+
+    if backend == "native" then
+        if supports_native_image_api() then
+            return { kind = "native", api = vim.ui.img }
+        end
+        warn_unavailable_backend("native")
+        return nil
+    end
+
     local ok, image = pcall(require, "image")
-    if ok then
-        return image
+    local function load_plugin_backend()
+        local ok_plugin, plugin_image = pcall(require, "image")
+        if ok_plugin then
+            return { kind = "plugin", api = plugin_image }
+        end
+
+        local ok_lazy, lazy = pcall(require, "lazy")
+        if ok_lazy then
+            pcall(lazy.load, { plugins = { "image.nvim" } })
+        end
+
+        ok_plugin, plugin_image = pcall(require, "image")
+        if ok_plugin then
+            return { kind = "plugin", api = plugin_image }
+        end
+
+        return nil
     end
 
-    local ok_lazy, lazy = pcall(require, "lazy")
-    if ok_lazy then
-        pcall(lazy.load, { plugins = { "image.nvim" } })
+    if backend == "image.nvim" then
+        local plugin_backend = load_plugin_backend()
+        if plugin_backend then
+            return plugin_backend
+        end
+        warn_unavailable_backend("image.nvim")
+        return nil
     end
 
-    ok, image = pcall(require, "image")
-    if ok then
-        return image
+    if supports_native_image_api() then
+        return { kind = "native", api = vim.ui.img }
     end
 
+    local plugin_backend = load_plugin_backend()
+    if plugin_backend then
+        return plugin_backend
+    end
+
+    warn_missing_image_backend()
     return nil
 end
 
 function M.clear_image()
     local state = context.get_state()
     if state.image then
-        pcall(state.image.clear, state.image)
+        if state.image.kind == "native" then
+            pcall(vim.ui.img.del, state.image.id)
+        elseif state.image.kind == "plugin" and state.image.handle then
+            pcall(state.image.handle.clear, state.image.handle)
+        end
         state.image = nil
     end
 end
@@ -72,6 +151,198 @@ local function update_preview_image(image, result, preview_win, preview_buf, wid
         image.cropped_path = absolute_path
         image.resized_path = absolute_path
     end
+end
+
+local function read_file_bytes(path)
+    local fd, open_err = vim.uv.fs_open(path, "r", 438)
+    if not fd then
+        return nil, open_err
+    end
+
+    local stat, stat_err = vim.uv.fs_fstat(fd)
+    if not stat then
+        vim.uv.fs_close(fd)
+        return nil, stat_err
+    end
+
+    local data, read_err = vim.uv.fs_read(fd, stat.size, 0)
+    vim.uv.fs_close(fd)
+    if not data then
+        return nil, read_err
+    end
+
+    return data, nil
+end
+
+local function byte_to_int(b1, b2, b3, b4)
+    return b1 * 16777216 + b2 * 65536 + b3 * 256 + b4
+end
+
+local function read_png_size(data)
+    if type(data) ~= "string" or #data < 24 then
+        return nil
+    end
+
+    if data:sub(1, 8) ~= "\137PNG\r\n\26\n" or data:sub(13, 16) ~= "IHDR" then
+        return nil
+    end
+
+    local b = { data:byte(17, 24) }
+    if #b < 8 then
+        return nil
+    end
+
+    local width = byte_to_int(b[1], b[2], b[3], b[4])
+    local height = byte_to_int(b[5], b[6], b[7], b[8])
+    if width <= 0 or height <= 0 then
+        return nil
+    end
+
+    return width, height
+end
+
+local function default_cell_aspect_ratio()
+    local term = (vim.env.TERM or ""):lower()
+    return (term:find("kitty", 1, true) or vim.env.KITTY_WINDOW_ID) and 2 or 1
+end
+
+local function decode_json_output(command)
+    local result = util.system_wait(command)
+    if result.code ~= 0 or not result.stdout or result.stdout == "" then
+        return nil
+    end
+
+    local ok, decoded = pcall(vim.json.decode, result.stdout)
+    if not ok then
+        return nil
+    end
+
+    return decoded
+end
+
+local function kitty_window_grid_size()
+    if vim.fn.executable("kitty") ~= 1 or not vim.env.KITTY_WINDOW_ID then
+        return nil
+    end
+
+    local decoded = decode_json_output({ "kitty", "@", "ls" })
+    if type(decoded) ~= "table" then
+        return nil
+    end
+
+    local target_id = tonumber(vim.env.KITTY_WINDOW_ID)
+    for _, os_window in ipairs(decoded) do
+        for _, tab in ipairs(os_window.tabs or {}) do
+            for _, window in ipairs(tab.windows or {}) do
+                if tonumber(window.id) == target_id then
+                    return window.columns, window.lines
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function hyprland_active_window_size()
+    if vim.fn.executable("hyprctl") ~= 1 or not vim.env.HYPRLAND_INSTANCE_SIGNATURE then
+        return nil
+    end
+
+    local decoded = decode_json_output({ "hyprctl", "activewindow", "-j" })
+    if type(decoded) ~= "table" or type(decoded.size) ~= "table" then
+        return nil
+    end
+
+    local size = decoded.size
+    local width = tonumber(size[1])
+    local height = tonumber(size[2])
+    if not width or not height or width <= 0 or height <= 0 then
+        return nil
+    end
+
+    return width, height
+end
+
+local function detect_cell_aspect_ratio()
+    local cols, rows = kitty_window_grid_size()
+    local pixel_width, pixel_height = hyprland_active_window_size()
+    if not cols or not rows or not pixel_width or not pixel_height then
+        return nil
+    end
+
+    local cell_width = pixel_width / cols
+    local cell_height = pixel_height / rows
+    if cell_width <= 0 or cell_height <= 0 then
+        return nil
+    end
+
+    return cell_height / cell_width
+end
+
+local function get_cell_aspect_ratio()
+    local preview_config = context.get_config().preview or {}
+    if type(preview_config.cell_aspect_ratio) == "number" and preview_config.cell_aspect_ratio > 0 then
+        return preview_config.cell_aspect_ratio
+    end
+
+    local state = context.get_state()
+    if state.attempted_cell_aspect_ratio_detection then
+        return state.detected_cell_aspect_ratio or default_cell_aspect_ratio()
+    end
+
+    state.attempted_cell_aspect_ratio_detection = true
+    state.detected_cell_aspect_ratio = detect_cell_aspect_ratio()
+    return state.detected_cell_aspect_ratio or default_cell_aspect_ratio()
+end
+
+local function fit_image_size(max_width, max_height, image_width, image_height)
+    local _ = image_width
+    local __ = image_height
+
+    local cell_aspect_ratio = get_cell_aspect_ratio()
+
+    local height = math.max(math.min(max_height, math.floor(max_width / cell_aspect_ratio)), 1)
+    local width = math.max(math.floor(height * cell_aspect_ratio), 1)
+
+    if width > max_width then
+        width = math.max(max_width, 1)
+        height = math.max(math.floor(width / cell_aspect_ratio), 1)
+    end
+
+    return width, height
+end
+
+local function native_image_opts(preview_win, width, height)
+    local state = context.get_state()
+    local config = context.get_config()
+    local win_pos = vim.api.nvim_win_get_position(preview_win)
+    local image_y = math.max((state.preview_text_line_count or 1) + (config.preview.image_gap_lines or 0) - 1, 0)
+
+    return {
+        row = win_pos[1] + image_y + 1,
+        col = win_pos[2] + 1,
+        width = width,
+        height = height,
+    }
+end
+
+local function render_native_image(image_api, result, preview_win, width, height, data)
+    data = data or read_file_bytes(result.output_png)
+    local err = nil
+    if type(data) ~= "string" then
+        data, err = read_file_bytes(result.output_png)
+    end
+    if not data then
+        util.notify(string.format("Failed to read preview image '%s': %s", result.output_png, err or "unknown error"), vim.log.levels.WARN)
+        return
+    end
+
+    local image_width, image_height = read_png_size(data)
+    width, height = fit_image_size(width, height, image_width, image_height)
+
+    local id = image_api.set(data, native_image_opts(preview_win, width, height))
+    context.get_state().image = { kind = "native", id = id }
 end
 
 function M.ensure_preview_window()
@@ -256,8 +527,25 @@ function M.show_preview(result)
         12
     )
 
-    if not state.image then
-        state.image = image_api.from_file(result.output_png, {
+    local image_data = nil
+    local image_width = nil
+    local image_height = nil
+    if vim.fn.filereadable(result.output_png) == 1 then
+        image_data = read_file_bytes(result.output_png)
+        if type(image_data) == "string" then
+            image_width, image_height = read_png_size(image_data)
+        end
+    end
+    width, height = fit_image_size(width, height, image_width, image_height)
+
+    if image_api.kind == "native" then
+        render_native_image(image_api.api, result, preview_win, width, height, image_data)
+        return
+    end
+
+    local image = state.image and state.image.handle or nil
+    if not image then
+        image = image_api.api.from_file(result.output_png, {
             id = "shaderdebug-preview",
             namespace = "shaderdebug",
             window = preview_win,
@@ -269,11 +557,12 @@ function M.show_preview(result)
             width = width,
             height = height,
         })
+        state.image = { kind = "plugin", handle = image }
     end
 
-    if state.image then
-        update_preview_image(state.image, result, preview_win, preview_buf, width, height)
-        state.image:render()
+    if image then
+        update_preview_image(image, result, preview_win, preview_buf, width, height)
+        image:render()
     end
 end
 

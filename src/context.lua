@@ -14,6 +14,8 @@ local default_config = {
         top_padding_lines = 8,
         image_gap_lines = 1,
         bottom_padding_lines = 1,
+        cell_aspect_ratio = nil,
+        backend = "auto",
     },
     cache_dir = vim.fn.stdpath("cache") .. "/shaderdebug",
     runner_source = vim.fn.stdpath("config") .. "/lua/shaderdebug/renderer_vk.cpp",
@@ -42,6 +44,8 @@ local state = {
     preview_context = nil,
     preview_text_line_count = 0,
     image = nil,
+    detected_cell_aspect_ratio = nil,
+    attempted_cell_aspect_ratio_detection = false,
     augroup = nil,
     last_result = nil,
     input_overrides = {},
@@ -83,6 +87,23 @@ local function normalize_api(value)
     end
     if normalized == "auto" or normalized == "opengl" or normalized == "vulkan" then
         return normalized
+    end
+
+    return nil
+end
+
+local function normalize_preview_backend(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+
+    local normalized = value:lower()
+    if normalized == "auto" or normalized == "native" or normalized == "image.nvim" then
+        return normalized
+    end
+
+    if normalized == "image" or normalized == "image_nvim" or normalized == "image-nvim" then
+        return "image.nvim"
     end
 
     return nil
@@ -133,6 +154,8 @@ end
 function M.setup(user_config)
     config = vim.tbl_deep_extend("force", vim.deepcopy(default_config), user_config or {})
     config.api = normalize_api(config.api) or default_config.api
+    config.preview = config.preview or {}
+    config.preview.backend = normalize_preview_backend(config.preview.backend) or default_config.preview.backend
     state.auto_enabled = config.auto_preview
     return config
 end
