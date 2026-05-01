@@ -59,6 +59,35 @@ local function apply_render_output(result, render_target, process_result)
     return true
 end
 
+local function request_signature(request)
+    if not request then
+        return nil
+    end
+
+    return {
+        bufnr = request.bufnr,
+        cursor_line = request.cursor_line,
+        changedtick = request.changedtick,
+    }
+end
+
+local function same_request(a, b)
+    return a
+        and b
+        and a.bufnr == b.bufnr
+        and a.cursor_line == b.cursor_line
+        and a.changedtick == b.changedtick
+        or false
+end
+
+local function should_skip_scheduled_request(state, request)
+    if same_request(state.pending_request, request) then
+        return true
+    end
+
+    return not state.active_process and same_request(state.last_preview_request, request)
+end
+
 function M.current_cursor_line_for_buffer(bufnr)
     local current_buf = vim.api.nvim_get_current_buf()
     if current_buf == bufnr then
@@ -100,6 +129,7 @@ local function prepare_render_request(opts)
     end
 
     local cursor_line = opts.cursor_line or M.current_cursor_line_for_buffer(bufnr)
+    local changedtick = opts.changedtick or vim.api.nvim_buf_get_changedtick(bufnr)
     local payload, err = source.build_instrumented_source(bufnr, cursor_line)
     if not payload then
         return nil, err
@@ -123,6 +153,7 @@ local function prepare_render_request(opts)
         opts = opts,
         bufnr = bufnr,
         cursor_line = cursor_line,
+        changedtick = changedtick,
         payload = payload,
         temp_source = temp_source,
         output_png = output_png,
@@ -234,6 +265,7 @@ function M.start_preview_job(opts, on_complete)
         state.active_process = nil
         if result then
             state.last_result = result
+            state.last_preview_request = request_signature(request)
             if not opts_for_job.skip_preview and not opts_for_job.skip_render then
                 show_preview(result)
             end
@@ -385,6 +417,10 @@ function M.schedule_preview(bufnr, cursor_line)
         cursor_line = cursor_line or M.current_cursor_line_for_buffer(bufnr),
         changedtick = vim.api.nvim_buf_get_changedtick(bufnr),
     }
+    if should_skip_scheduled_request(state, request) then
+        return
+    end
+
     state.pending_request = request
 
     if not state.timer then
@@ -400,7 +436,12 @@ function M.schedule_preview(bufnr, cursor_line)
             return
         end
 
-        M.start_preview_job({ bufnr = request.bufnr, cursor_line = request.cursor_line, silent = true }, function(_, err)
+        M.start_preview_job({
+            bufnr = request.bufnr,
+            cursor_line = request.cursor_line,
+            changedtick = request.changedtick,
+            silent = true,
+        }, function(_, err)
             if err and not err:match("Cursor line must") then
                 util.notify(err, vim.log.levels.WARN)
             end

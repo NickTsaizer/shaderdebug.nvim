@@ -50,6 +50,7 @@ local state = {
     attempted_cell_aspect_ratio_detection = false,
     augroup = nil,
     last_result = nil,
+    last_preview_request = nil,
     input_overrides = {},
     input_editors = {},
 }
@@ -159,6 +160,8 @@ function M.setup(user_config)
     config.preview = config.preview or {}
     config.preview.backend = normalize_preview_backend(config.preview.backend) or default_config.preview.backend
     state.auto_enabled = config.auto_preview
+    state.pending_request = nil
+    state.last_preview_request = nil
     return config
 end
 

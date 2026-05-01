@@ -156,6 +156,14 @@ local function first_function_line(lines)
     return #lines + 1
 end
 
+local function copy_lines(lines)
+    local copied = {}
+    for index = 1, #lines do
+        copied[index] = lines[index]
+    end
+    return copied
+end
+
 local function build_instrumented_line(line, expression, in_entry_function)
     local indent = line:match("^(%s*)") or ""
 
@@ -212,7 +220,7 @@ function M.build_instrumented_source(bufnr, cursor_line)
         return nil, "Cursor line must be inside a function body"
     end
 
-    local new_lines = vim.deepcopy(lines)
+    local new_lines = copy_lines(lines)
     local replacement_a, replacement_b = build_instrumented_line(line, expression, enclosing_function.name == entry)
     new_lines[cursor_line] = replacement_a
     if replacement_b then
