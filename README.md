@@ -69,7 +69,7 @@ Configure the render API and preview display backend in `setup()`:
 require("shaderdebug").setup({
   api = "auto", -- "vulkan", "opengl", or "auto"
   preview = {
-    backend = "auto", -- "auto", "native", or "image.nvim"
+    backend = "native", -- "native", "auto", or "image.nvim"
   },
 })
 ```
@@ -116,7 +116,7 @@ require("shaderdebug").setup({
   slangc = "slangc",         -- compiler command or absolute path
   glslang_validator = "glslangValidator", -- validator command or absolute path
   preview = {
-    backend = "auto",        -- "auto", "native", or "image.nvim"
+    backend = "native",      -- "native", "auto", or "image.nvim"
     cell_aspect_ratio = nil,  -- override terminal cell height/width ratio if needed
   },
 })
@@ -130,8 +130,8 @@ require("shaderdebug").setup({
 
 ### Preview display backend notes
 
+- `preview.backend = "native"` is the default and requires a Neovim build with `vim.ui.img` support
 - `preview.backend = "auto"` prefers Neovim's native image API when supported, then falls back to `image.nvim`
-- `preview.backend = "native"` requires a Neovim build with `vim.ui.img` support
 - `preview.backend = "image.nvim"` forces plugin-based preview rendering
 - `preview.cell_aspect_ratio` lets you manually tune image sizing when your terminal reports unusual cell proportions
 

@@ -7,6 +7,7 @@ local M = {}
 local on_preview_closed = function() end
 local native_image_supported = nil
 local missing_image_backend_warned = false
+local NATIVE_PREVIEW_ZINDEX = -1073741825
 
 local function warn_missing_image_backend()
     if missing_image_backend_warned then
@@ -121,6 +122,28 @@ function M.clear_image()
         end
         state.image = nil
     end
+end
+
+function M.set_native_image_suspended(suspended)
+    context.get_state().native_preview_suspended = suspended and true or false
+    if suspended then
+        M.clear_image()
+    end
+end
+
+function M.set_image_suspended(suspended)
+    context.get_state().preview_image_suspended = suspended and true or false
+    if suspended then
+        M.clear_image()
+    end
+end
+
+function M.image_suspended()
+    return context.get_state().preview_image_suspended == true
+end
+
+function M.native_image_suspended()
+    return context.get_state().native_preview_suspended == true
 end
 
 local function update_preview_image(image, result, preview_win, preview_buf, width, height)
@@ -324,6 +347,7 @@ local function native_image_opts(preview_win, width, height)
         col = win_pos[2] + 1,
         width = width,
         height = height,
+        zindex = NATIVE_PREVIEW_ZINDEX,
     }
 end
 
@@ -538,7 +562,14 @@ function M.show_preview(result)
     end
     width, height = fit_image_size(width, height, image_width, image_height)
 
+    if M.image_suspended() then
+        return
+    end
+
     if image_api.kind == "native" then
+        if M.native_image_suspended() then
+            return
+        end
         render_native_image(image_api.api, result, preview_win, width, height, image_data)
         return
     end
