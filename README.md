@@ -9,12 +9,15 @@ A Neovim plugin for live Slang shader debugging — preview what any line of you
 - **Live shader previews** — move your cursor to any Slang line and see what it outputs rendered on a quad
 - **Reflection-driven** — automatically detects textures, buffers, samplers, and uniform bindings from your shader
 - **Interactive inputs** — click or press Enter on any input to bind custom images, textures, or JSON data
-- **Dual backend** — render previews through Vulkan or headless OpenGL/EGL
+- **Dual render API** — render previews through Vulkan or headless OpenGL/EGL
+- **Selectable preview display backend** — show images through Neovim's native `vim.ui.img` API or `image.nvim`
 - **Non-blocking** — everything runs in the background, so your editor never stutters
 
 ## Installation
 
 ### Using lazy.nvim
+
+With `image.nvim`:
 
 ```lua
 {
@@ -24,12 +27,23 @@ A Neovim plugin for live Slang shader debugging — preview what any line of you
 }
 ```
 
+With Neovim's native image support only:
+
+```lua
+{
+  "NickTsaizer/shaderdebug.nvim",
+  ft = { "slang" },
+}
+```
+
 ### Requirements
 
 - **Neovim** 0.10+
-- **image.nvim** — for displaying rendered previews inline
-- **slangc** — Slang compiler (`~/VulkanSDK/.../bin/slangc`)
-- **glslangValidator** — for SPIR-V compilation
+- **Preview display backend** — either:
+  - **A Neovim build with native image support** (`vim.ui.img`)
+  - **image.nvim** for plugin-based inline image rendering
+- **slangc** — available on your `PATH`, or configured via `setup({ slangc = "/path/to/slangc" })`
+- **glslangValidator** — available on your `PATH`, or configured via `setup({ glslang_validator = "/path/to/glslangValidator" })`
 - **Vulkan** — required when `api = "vulkan"` or `api = "auto"`
 - **EGL + OpenGL** — required when `api = "opengl"` (headless/offscreen path)
 - **libepoxy** — OpenGL function loading for the headless EGL path
@@ -49,11 +63,14 @@ A Neovim plugin for live Slang shader debugging — preview what any line of you
 :ShaderDebugToggleAuto
 ```
 
-Choose a backend globally in `setup()`:
+Configure the render API and preview display backend in `setup()`:
 
 ```lua
 require("shaderdebug").setup({
-  api = "vulkan", -- "vulkan", "opengl", or "auto" (currently falls back to Vulkan)
+  api = "auto", -- "vulkan", "opengl", or "auto"
+  preview = {
+    backend = "auto", -- "auto", "native", or "image.nvim"
+  },
 })
 ```
 
@@ -77,7 +94,7 @@ require("shaderdebug").setup({
 The preview split shows:
 
 1. **Header** — `<entry> > <expression>`
-2. **API** — backend being used (e.g. `vulkan`)
+2. **Render API** — the active renderer (e.g. `vulkan`)
 3. **Inputs** — each reflected resource with current binding
 
 Move the cursor onto an input line and press:
@@ -92,20 +109,52 @@ Pass options to `setup()`:
 
 ```lua
 require("shaderdebug").setup({
-  api = "vulkan",           -- "vulkan", "opengl", or "auto"
+  api = "vulkan",            -- "vulkan", "opengl", or "auto"
   auto_preview = false,      -- start with auto-preview disabled
   debounce_ms = 180,         -- delay before rendering
   image_size = 512,          -- preview image resolution
-  slangc = "slangc",         -- path to slangc
-  glslang_validator = "glslangValidator",
+  slangc = "slangc",         -- compiler command or absolute path
+  glslang_validator = "glslangValidator", -- validator command or absolute path
+  preview = {
+    backend = "auto",        -- "auto", "native", or "image.nvim"
+    cell_aspect_ratio = nil,  -- override terminal cell height/width ratio if needed
+  },
 })
 ```
 
-### Backend notes
+### Render API notes
 
 - `api = "vulkan"` compiles Slang to SPIR-V and uses the Vulkan offscreen renderer
 - `api = "opengl"` compiles Slang to GLSL and uses a headless EGL/OpenGL renderer
 - `api = "auto"` currently resolves to Vulkan
+
+### Preview display backend notes
+
+- `preview.backend = "auto"` prefers Neovim's native image API when supported, then falls back to `image.nvim`
+- `preview.backend = "native"` requires a Neovim build with `vim.ui.img` support
+- `preview.backend = "image.nvim"` forces plugin-based preview rendering
+- `preview.cell_aspect_ratio` lets you manually tune image sizing when your terminal reports unusual cell proportions
+
+Example native-only setup:
+
+```lua
+require("shaderdebug").setup({
+  preview = {
+    backend = "native",
+  },
+})
+```
+
+Example `image.nvim` setup with manual sizing override:
+
+```lua
+require("shaderdebug").setup({
+  preview = {
+    backend = "image.nvim",
+    cell_aspect_ratio = 2,
+  },
+})
+```
 
 ### OpenGL texture example
 
@@ -135,9 +184,9 @@ Bind the texture from Neovim:
 ## Known Limitations
 
 - Only **fragment shaders** are supported
-- Works best with **simple expressions** (assignments, returns)
+- Works best with **simple expressions** (assignments, returns, direct function calls)
 - OpenGL currently treats sampled textures as combined `sampler2D` uniforms internally
 
 ## Credits
 
-Built with [Slang](https://github.com/shader-slang/slang), [Vulkan](https://www.vulkan.org/), [EGL/OpenGL](https://www.khronos.org/egl/), and [image.nvim](https://github.com/3rd/image.nvim).
+Built with [Slang](https://github.com/shader-slang/slang), [Vulkan](https://www.vulkan.org/), and [EGL/OpenGL](https://www.khronos.org/egl/).
