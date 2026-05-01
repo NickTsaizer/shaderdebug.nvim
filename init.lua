@@ -26,7 +26,10 @@ local function disable_auto_preview(reason)
 end
 
 preview.setup({ on_preview_closed = disable_auto_preview })
-render.setup({ show_preview = preview.show_preview })
+render.setup({
+    show_preview = preview.show_preview,
+    get_preview_render_target = preview.get_render_target,
+})
 input_ui.setup({ rerender_context = render.rerender_context })
 
 function M.preview_current_line(opts)

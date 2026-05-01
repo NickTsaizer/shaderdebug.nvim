@@ -9,9 +9,54 @@ local util = require("shaderdebug.src.util")
 local M = {}
 
 local show_preview = function() end
+local get_preview_render_target = function()
+    return { mode = "file" }
+end
 
 function M.setup(opts)
     show_preview = opts and opts.show_preview or show_preview
+    get_preview_render_target = opts and opts.get_preview_render_target or get_preview_render_target
+end
+
+local function normalize_render_target(target, output_png)
+    local mode = type(target) == "table" and target.mode or "file"
+    return {
+        mode = mode == "memory" and "memory" or "file",
+        output_png = output_png,
+    }
+end
+
+local function build_render_result(request, fragment_output, vertex_output, manifest_path, resource_specs)
+    return {
+        api = request.api,
+        entry = request.payload.entry,
+        expression = request.payload.expression,
+        cursor_line = request.cursor_line,
+        bufnr = request.bufnr,
+        shader_key = request.shader_key,
+        output_mode = request.render_target.mode,
+        output_png = request.output_png,
+        output_png_data = nil,
+        temp_source = request.temp_source,
+        fragment_spv = fragment_output,
+        vertex_spv = vertex_output,
+        manifest_path = manifest_path,
+        resource_specs = resource_specs,
+    }
+end
+
+local function apply_render_output(result, render_target, process_result)
+    if render_target.mode ~= "memory" then
+        return true
+    end
+
+    local data = process_result and process_result.stdout or nil
+    if type(data) ~= "string" or data == "" then
+        return nil, "Renderer returned no PNG bytes"
+    end
+
+    result.output_png_data = data
+    return true
 end
 
 function M.current_cursor_line_for_buffer(bufnr)
@@ -71,6 +116,8 @@ local function prepare_render_request(opts)
         return nil, "Renderer build failed"
     end
 
+    local render_target = normalize_render_target(get_preview_render_target(), output_png)
+
     return {
         api = api,
         opts = opts,
@@ -81,6 +128,7 @@ local function prepare_render_request(opts)
         output_png = output_png,
         prefix = prefix,
         shader_key = shader_key,
+        render_target = render_target,
     }
 end
 
@@ -132,33 +180,26 @@ function M.render_current_line(opts)
         return nil, "Failed to prepare inputs:\n" .. prepared_specs_or_err
     end
 
-    local result = {
-        api = request.api,
-        entry = request.payload.entry,
-        expression = request.payload.expression,
-        cursor_line = request.cursor_line,
-        bufnr = request.bufnr,
-        shader_key = request.shader_key,
-        output_png = request.output_png,
-        temp_source = request.temp_source,
-        fragment_spv = fragment_output,
-        vertex_spv = vertex_output,
-        manifest_path = manifest_path,
-        resource_specs = prepared_specs_or_err,
-    }
+    local result = build_render_result(request, fragment_output, vertex_output, manifest_path, prepared_specs_or_err)
 
     if not request.opts.skip_render then
-        local ok, render_err = reflection.render_preview(
+        local render_output, render_err = reflection.render_preview(
             request.api,
             vertex_output,
             fragment_output,
             manifest_path,
-            request.output_png,
+            request.render_target,
             request.payload.entry
         )
-        if not ok then
+        if not render_output then
             local label = request.api == "opengl" and "OpenGL" or "Vulkan"
             return nil, string.format("%s preview render failed:\n%s", label, render_err)
+        end
+
+        local ok, output_err = apply_render_output(result, request.render_target, render_output)
+        if not ok then
+            local label = request.api == "opengl" and "OpenGL" or "Vulkan"
+            return nil, string.format("%s preview render failed:\n%s", label, output_err)
         end
     end
 
@@ -205,12 +246,12 @@ function M.start_preview_job(opts, on_complete)
         end
     end
 
-    local function spawn(cmd, err_prefix, next_step)
+    local function spawn(cmd, system_opts, err_prefix, next_step)
         if not is_current() then
             return
         end
 
-        state.active_process = util.system_start(cmd, nil, function(result)
+        state.active_process = util.system_start(cmd, system_opts, function(result)
             if not is_current() then
                 return
             end
@@ -229,6 +270,7 @@ function M.start_preview_job(opts, on_complete)
     local fragment_spec = reflection.fragment_compile_spec(request.temp_source, request.prefix, request.payload.entry, api)
     spawn(
         fragment_spec.command,
+        nil,
         string.format("Slang %s compile failed:\n", api == "opengl" and "GLSL" or "SPIR-V"),
         function()
             if api == "opengl" then
@@ -275,20 +317,13 @@ function M.start_preview_job(opts, on_complete)
                 return
             end
 
-            local result = {
-                api = api,
-                entry = request.payload.entry,
-                expression = request.payload.expression,
-                cursor_line = request.cursor_line,
-                bufnr = request.bufnr,
-                shader_key = request.shader_key,
-                output_png = request.output_png,
-                temp_source = request.temp_source,
-                fragment_spv = fragment_spec.fragment_output,
-                vertex_spv = vertex_spec.output_path,
-                manifest_path = manifest_path,
-                resource_specs = prepared_specs_or_err,
-            }
+            local result = build_render_result(
+                request,
+                fragment_spec.fragment_output,
+                vertex_spec.output_path,
+                manifest_path,
+                prepared_specs_or_err
+            )
 
             if opts_for_job.skip_render then
                 finish(result, nil)
@@ -297,9 +332,23 @@ function M.start_preview_job(opts, on_complete)
 
             local function spawn_render()
                 spawn(
-                    reflection.render_command_spec(api, vertex_spec.output_path, fragment_spec.fragment_output, manifest_path, request.output_png, request.payload.entry),
+                    reflection.render_command_spec(
+                        api,
+                        vertex_spec.output_path,
+                        fragment_spec.fragment_output,
+                        manifest_path,
+                        request.render_target,
+                        request.payload.entry
+                    ),
+                    reflection.render_command_opts(request.render_target),
                     string.format("%s preview render failed:\n", api == "opengl" and "OpenGL" or "Vulkan"),
-                    function()
+                    function(render_output)
+                        local ok, output_err = apply_render_output(result, request.render_target, render_output)
+                        if not ok then
+                            finish(nil, string.format("%s preview render failed:\n%s", api == "opengl" and "OpenGL" or "Vulkan", output_err))
+                            return
+                        end
+
                         finish(result, nil)
                     end
                 )
@@ -308,6 +357,7 @@ function M.start_preview_job(opts, on_complete)
             if vertex_spec.command then
                 spawn(
                     vertex_spec.command,
+                    nil,
                     string.format("Vertex %s build failed:\n", api == "opengl" and "GLSL" or "SPIR-V"),
                     spawn_render
                 )

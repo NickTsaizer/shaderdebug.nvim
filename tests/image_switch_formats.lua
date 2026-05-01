@@ -31,14 +31,25 @@ local function find_spec(result, name)
   end
 end
 
+local function assert_render_output(result, label)
+  if result.output_mode == "memory" then
+    local data = result.output_png_data
+    assert_truthy(type(data) == "string" and #data > 24, "rendered output bytes missing for " .. label)
+    assert_truthy(data:sub(1, 8) == "\137PNG\r\n\26\n", "rendered bytes are not png for " .. label)
+    return
+  end
+
+  assert_truthy(vim.fn.filereadable(result.output_png) == 1, "rendered output missing for " .. label)
+end
+
 local function render_with_image(image)
   shaderdebug.set_image_input("scene_color", image.path)
-  vim.api.nvim_win_set_cursor(0, { 24, 0 })
+  vim.api.nvim_win_set_cursor(0, { 30, 0 })
   local result = assert_truthy(shaderdebug.preview_current_line({ sync = true }), "render failed for " .. image.label)
   local spec = assert_truthy(find_spec(result, "scene_color"), "scene_color missing for " .. image.label)
   local bound = assert_truthy(spec.bound_values and spec.bound_values[1], "scene_color bound value missing for " .. image.label)
   assert_truthy(vim.fn.filereadable(bound) == 1, "bound file unreadable for " .. image.label .. ": " .. bound)
-  assert_truthy(vim.fn.filereadable(result.output_png) == 1, "rendered output missing for " .. image.label)
+  assert_render_output(result, image.label)
 
   if image.expect_passthrough then
     local expected = vim.fn.fnamemodify(image.path, ":p")

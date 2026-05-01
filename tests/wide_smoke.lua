@@ -55,6 +55,17 @@ local function has_resource(result, name)
   return false
 end
 
+local function assert_render_output(result)
+  if result.output_mode == "memory" then
+    local data = result.output_png_data
+    assert_truthy(type(data) == "string" and #data > 24, "missing rendered png bytes")
+    assert_truthy(data:sub(1, 8) == "\137PNG\r\n\26\n", "rendered bytes are not a png")
+    return
+  end
+
+  assert_truthy(vim.fn.filereadable(result.output_png) == 1, "missing rendered png")
+end
+
 local function run_line_case(api, line, expected_resources)
   set_test_cursor(line)
   local inputs_result = assert_truthy(shaderdebug.show_inputs(), string.format("show_inputs failed for %s line %d", api, line))
@@ -67,7 +78,7 @@ local function run_line_case(api, line, expected_resources)
   local render_result = assert_truthy(shaderdebug.preview_current_line({ sync = true }), string.format("preview_current_line failed for %s line %d", api, line))
   assert_eq(render_result.api, api, "render api mismatch")
   assert_eq(render_result.cursor_line, line, "cursor line mismatch")
-  assert_truthy(vim.fn.filereadable(render_result.output_png) == 1, "missing rendered png")
+  assert_render_output(render_result)
   assert_truthy(render_result.manifest_path and vim.fn.filereadable(render_result.manifest_path) == 1, "missing manifest")
   assert_truthy(render_result.vertex_spv and render_result.fragment_spv, "missing compiled shader outputs")
   for _, name in ipairs(expected_resources or {}) do

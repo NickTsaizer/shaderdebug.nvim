@@ -8,6 +8,7 @@ local on_preview_closed = function() end
 local native_image_supported = nil
 local missing_image_backend_warned = false
 local NATIVE_PREVIEW_ZINDEX = -1073741825
+local supports_native_image_api
 
 local function warn_missing_image_backend()
     if missing_image_backend_warned then
@@ -34,6 +35,15 @@ function M.setup(opts)
     on_preview_closed = opts and opts.on_preview_closed or on_preview_closed
 end
 
+function M.get_render_target()
+    local backend = (context.get_config().preview or {}).backend or "auto"
+    if (backend == "native" or backend == "auto") and supports_native_image_api() then
+        return { mode = "memory" }
+    end
+
+    return { mode = "file" }
+end
+
 function M.result_context(result)
     return {
         bufnr = result.bufnr,
@@ -42,7 +52,7 @@ function M.result_context(result)
     }
 end
 
-local function supports_native_image_api()
+supports_native_image_api = function()
     if native_image_supported ~= nil then
         return native_image_supported
     end
@@ -358,7 +368,8 @@ local function render_native_image(image_api, result, preview_win, width, height
         data, err = read_file_bytes(result.output_png)
     end
     if not data then
-        util.notify(string.format("Failed to read preview image '%s': %s", result.output_png, err or "unknown error"), vim.log.levels.WARN)
+        local source = result.output_png or "<memory>"
+        util.notify(string.format("Failed to read preview image '%s': %s", source, err or "unknown error"), vim.log.levels.WARN)
         return
     end
 
@@ -554,7 +565,10 @@ function M.show_preview(result)
     local image_data = nil
     local image_width = nil
     local image_height = nil
-    if vim.fn.filereadable(result.output_png) == 1 then
+    if type(result.output_png_data) == "string" then
+        image_data = result.output_png_data
+        image_width, image_height = read_png_size(image_data)
+    elseif type(result.output_png) == "string" and vim.fn.filereadable(result.output_png) == 1 then
         image_data = read_file_bytes(result.output_png)
         if type(image_data) == "string" then
             image_width, image_height = read_png_size(image_data)

@@ -19,6 +19,7 @@ struct Options {
     std::string manifest_path;
     std::string entry_name = "main";
     std::string output_path;
+    bool stdout_png = false;
     uint32_t size = 512;
 };
 
@@ -296,6 +297,66 @@ static bool write_png(const std::string &path, uint32_t width, uint32_t height, 
     return true;
 }
 
+static void append_png_bytes(png_structp png, png_bytep data, png_size_t size)
+{
+    auto *buffer = static_cast<std::vector<uint8_t> *>(png_get_io_ptr(png));
+    buffer->insert(buffer->end(), data, data + size);
+}
+
+static void flush_png_bytes(png_structp)
+{
+}
+
+static std::vector<uint8_t> encode_png(uint32_t width, uint32_t height, const uint8_t *rgba)
+{
+    std::vector<uint8_t> bytes;
+    png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+    if (!png) {
+        throw std::runtime_error("failed to initialize png encoder");
+    }
+
+    png_infop info = png_create_info_struct(png);
+    if (!info) {
+        png_destroy_write_struct(&png, nullptr);
+        throw std::runtime_error("failed to initialize png metadata");
+    }
+
+    if (setjmp(png_jmpbuf(png))) {
+        png_destroy_write_struct(&png, &info);
+        throw std::runtime_error("failed to encode png output");
+    }
+
+    png_set_write_fn(png, &bytes, append_png_bytes, flush_png_bytes);
+    png_set_IHDR(
+        png,
+        info,
+        width,
+        height,
+        8,
+        PNG_COLOR_TYPE_RGBA,
+        PNG_INTERLACE_NONE,
+        PNG_COMPRESSION_TYPE_DEFAULT,
+        PNG_FILTER_TYPE_DEFAULT);
+    png_write_info(png, info);
+
+    std::vector<png_bytep> rows(height);
+    for (uint32_t y = 0; y < height; ++y) {
+        rows[y] = const_cast<png_bytep>(rgba + static_cast<size_t>(y) * static_cast<size_t>(width) * 4u);
+    }
+    png_write_image(png, rows.data());
+    png_write_end(png, nullptr);
+    png_destroy_write_struct(&png, &info);
+    return bytes;
+}
+
+static bool write_stdout_png(uint32_t width, uint32_t height, const uint8_t *rgba)
+{
+    const std::vector<uint8_t> bytes = encode_png(width, height, rgba);
+    std::cout.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    std::cout.flush();
+    return std::cout.good();
+}
+
 static ImagePixels read_png(const std::string &path)
 {
     FILE *file = fopen(path.c_str(), "rb");
@@ -468,6 +529,8 @@ static bool parse_args(int argc, char **argv, Options &options)
             options.entry_name = argv[++index];
         } else if (arg == "--output" && index + 1 < argc) {
             options.output_path = argv[++index];
+        } else if (arg == "--stdout-png") {
+            options.stdout_png = true;
         } else if (arg == "--size" && index + 1 < argc) {
             options.size = static_cast<uint32_t>(std::stoul(argv[++index]));
         } else {
@@ -476,8 +539,10 @@ static bool parse_args(int argc, char **argv, Options &options)
         }
     }
 
+    const bool has_output_target = !options.output_path.empty() || options.stdout_png;
+    const bool single_output_target = options.output_path.empty() || !options.stdout_png;
     return !options.vertex_path.empty() && !options.fragment_path.empty() && !options.manifest_path.empty() &&
-           !options.output_path.empty() && options.size > 0;
+           has_output_target && single_output_target && options.size > 0;
 }
 
 static GLuint compile_shader(GLenum type, const std::string &path)
@@ -673,7 +738,7 @@ int main(int argc, char **argv)
 {
     Options options;
     if (!parse_args(argc, argv, options)) {
-        std::cerr << "usage: shaderdebug_renderer_gl --vertex file.vert.glsl --fragment file.frag.glsl --manifest file.tsv --entry name --output out.png [--size 512]\n";
+        std::cerr << "usage: shaderdebug_renderer_gl --vertex file.vert.glsl --fragment file.frag.glsl --manifest file.tsv --entry name (--output out.png | --stdout-png) [--size 512]\n";
         return 1;
     }
 
@@ -738,8 +803,11 @@ int main(int argc, char **argv)
             std::copy(rgba.begin() + static_cast<std::ptrdiff_t>(src), rgba.begin() + static_cast<std::ptrdiff_t>(src + row_bytes), flipped.begin() + static_cast<std::ptrdiff_t>(dst));
         }
 
-        if (!write_png(options.output_path, options.size, options.size, flipped.data())) {
-            throw std::runtime_error("failed to write png: " + options.output_path);
+        const bool wrote_output = options.stdout_png
+            ? write_stdout_png(options.size, options.size, flipped.data())
+            : write_png(options.output_path, options.size, options.size, flipped.data());
+        if (!wrote_output) {
+            throw std::runtime_error("failed to write png output");
         }
     } catch (const std::exception &error) {
         std::cerr << error.what() << "\n";

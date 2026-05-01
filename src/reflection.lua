@@ -398,9 +398,17 @@ function M.vertex_compile_spec(prefix, api)
     }
 end
 
-function M.render_command_spec(api, vertex_output, fragment_output, manifest_path, output_png, entry)
+local function render_output_args(render_target)
+    if render_target and render_target.mode == "memory" then
+        return { "--stdout-png" }
+    end
+
+    return { "--output", render_target.output_png }
+end
+
+function M.render_command_spec(api, vertex_output, fragment_output, manifest_path, render_target, entry)
     local config = context.get_config()
-    return {
+    local command = {
         api == "opengl" and config.runner_binary_opengl or config.runner_binary,
         "--vertex",
         vertex_output,
@@ -410,11 +418,19 @@ function M.render_command_spec(api, vertex_output, fragment_output, manifest_pat
         manifest_path,
         "--entry",
         entry,
-        "--output",
-        output_png,
         "--size",
         tostring(config.image_size),
     }
+    vim.list_extend(command, render_output_args(render_target))
+    return command
+end
+
+function M.render_command_opts(render_target)
+    if render_target and render_target.mode == "memory" then
+        return { text = false }
+    end
+
+    return nil
 end
 
 function M.adapt_opengl_fragment_glsl(path)
@@ -482,13 +498,18 @@ function M.compile_fragment_artifact(temp_source, prefix, entry, api)
     return spec.fragment_output, spec.reflection_json
 end
 
-function M.render_preview(api, vertex_output, fragment_output, manifest_path, output_png, entry)
-    local result = util.system_wait(M.render_command_spec(api, vertex_output, fragment_output, manifest_path, output_png, entry))
+function M.render_preview(api, vertex_output, fragment_output, manifest_path, render_target, entry)
+    local result = util.system_wait(
+        M.render_command_spec(api, vertex_output, fragment_output, manifest_path, render_target, entry),
+        M.render_command_opts(render_target)
+    )
     if result.code ~= 0 then
         return nil, util.command_error(result)
     end
 
-    return true
+    return {
+        stdout = result.stdout,
+    }
 end
 
 return M
