@@ -2,6 +2,15 @@ local M = {}
 
 local preview_ns = vim.api.nvim_create_namespace("shaderdebug-preview")
 
+local function current_source_path()
+    local source = debug.getinfo(1, "S").source
+    return source:sub(1, 1) == "@" and source:sub(2) or source
+end
+
+local function plugin_root()
+    return vim.fn.fnamemodify(current_source_path(), ":h:h:h:h")
+end
+
 local default_config = {
     api = "auto",
     auto_preview = false,
@@ -18,9 +27,9 @@ local default_config = {
         backend = "native",
     },
     cache_dir = vim.fn.stdpath("cache") .. "/shaderdebug",
-    runner_source = vim.fn.stdpath("config") .. "/lua/shaderdebug/renderer_vk.cpp",
+    runner_source = plugin_root() .. "/renderer_vk.cpp",
     runner_binary = vim.fn.stdpath("cache") .. "/shaderdebug/shaderdebug_renderer",
-    runner_source_opengl = vim.fn.stdpath("config") .. "/lua/shaderdebug/renderer_gl.cpp",
+    runner_source_opengl = plugin_root() .. "/renderer_gl.cpp",
     runner_binary_opengl = vim.fn.stdpath("cache") .. "/shaderdebug/shaderdebug_renderer_gl",
     slangc = vim.fn.exepath("slangc") ~= "" and vim.fn.exepath("slangc") or "slangc",
     glslang_validator = vim.fn.exepath("glslangValidator") ~= "" and vim.fn.exepath("glslangValidator")

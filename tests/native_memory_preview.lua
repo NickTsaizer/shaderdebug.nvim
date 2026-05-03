@@ -1,4 +1,4 @@
-package.path = "/home/nick/.config/nvim/lua/?.lua;/home/nick/.config/nvim/lua/?/init.lua;" .. package.path
+dofile(vim.fn.fnamemodify((debug.getinfo(1, "S").source:sub(2)), ":h") .. "/bootstrap.lua")
 
 local shaderdebug = require("shaderdebug")
 local context = require("shaderdebug.src.context")
